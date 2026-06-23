@@ -1,8 +1,6 @@
 Flask>=3.0.0
-torch>=2.2.0
-torchvision>=0.17.0
+onnxruntime>=1.17.0
 Pillow>=10.0.0
 Werkzeug>=3.0.0
 numpy
-tqdm
 python-dotenv

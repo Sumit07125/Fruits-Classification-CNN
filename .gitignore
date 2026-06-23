@@ -55,3 +55,15 @@ Strawberry/
 # Local AI / Docs
 interview.md
 model.md
+
+# --- VERCEL DEPLOYMENT EXCLUSIONS ---
+# Exclude PyTorch Weights (We only need the ONNX model for Vercel)
+models/*.pt
+models/*.pth
+models/*.bin
+
+# Exclude Training & Utility Scripts
+train.py
+data_splitting.py
+predict.py
+convert_to_onnx.py
