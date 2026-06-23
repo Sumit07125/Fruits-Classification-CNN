@@ -1,0 +1,183 @@
+<!doctype html>
+<html lang="en" data-fruit="blend" data-mode="dark">
+<head>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <meta name="theme-color" content="#101714">
+    <title>Fruit AI Vision</title>
+    <link href="https://cdn.jsdelivr.net/npm/bootstrap@5.3.3/dist/css/bootstrap.min.css" rel="stylesheet">
+    <link rel="stylesheet" href="{{ url_for('static', filename='style.css') }}">
+</head>
+<body>
+    <div class="atmosphere" aria-hidden="true">
+        <span class="fruit-particle particle-a"></span>
+        <span class="fruit-particle particle-b"></span>
+        <span class="fruit-particle particle-c"></span>
+        <span class="fruit-particle particle-d"></span>
+        <span class="fruit-particle particle-e"></span>
+        <span class="fruit-particle particle-f"></span>
+    </div>
+
+    <div id="celebrationLayer" class="celebration-layer" aria-hidden="true"></div>
+
+    <div id="loadingScreen" class="loading-screen" aria-hidden="true">
+        <div class="loader-panel">
+            <div class="fruit-runner">
+                <span></span><span></span><span></span><span></span><span></span>
+            </div>
+            <p>Reading color, shape, and texture...</p>
+        </div>
+    </div>
+
+    <div class="toast-hub" aria-live="polite" aria-atomic="true">
+        <div id="toast" class="app-toast" role="status"></div>
+    </div>
+
+    <header class="topbar">
+        <a class="brand-mark" href="/" aria-label="Fruit AI Vision home">
+            <span class="brand-icon" id="brandIcon">&#127822;</span>
+            <span>Fruit AI Vision</span>
+        </a>
+        <div class="topbar-actions">
+            <span class="model-pill {{ 'ready' if model_ready else 'offline' }}">
+                {{ 'Model Ready' if model_ready else 'Model Offline' }}
+            </span>
+            <button id="modeToggle" class="icon-button" type="button" aria-label="Toggle dark mode">
+                <span id="modeIcon">&#9728;</span>
+            </button>
+        </div>
+    </header>
+
+    <main>
+        <section class="hero-band">
+            <div class="hero-copy">
+                <p class="eyebrow">ResNet-50 fruit intelligence</p>
+                <h1>Fruit AI Vision</h1>
+                <p class="hero-text">Upload a fruit image and watch the entire interface bloom into the model's prediction.</p>
+            </div>
+            <div class="hero-signal" aria-label="Current fruit theme">
+                <span id="heroFruit">&#127815;</span>
+                <strong id="heroMood">Awaiting Fruit</strong>
+                <small id="heroSubtext">Apple, Banana, Grape, Mango, or Strawberry</small>
+            </div>
+        </section>
+
+        {% if model_error %}
+        <section class="system-alert" role="alert">
+            <strong>Model load issue:</strong> {{ model_error }}
+        </section>
+        {% endif %}
+
+        <section class="tool-grid" aria-label="Fruit classifier workspace">
+            <section class="panel upload-panel">
+                <div class="panel-heading">
+                    <span class="panel-kicker">Image input</span>
+                    <button id="resetButton" class="ghost-button" type="button">Reset</button>
+                </div>
+
+                <div id="dropzone" class="dropzone" tabindex="0" role="button" aria-label="Choose or drop fruit image">
+                    <input id="fileInput" type="file" accept="image/*" hidden>
+                    <input id="cameraInput" type="file" accept="image/*" capture="environment" hidden>
+                    <div class="dropzone-symbol" id="uploadSymbol">&#127817;</div>
+                    <h2>Drop a fruit photo</h2>
+                    <p>Clear, close-up images work best.</p>
+                    <div class="upload-actions">
+                        <button id="galleryButton" class="primary-button" type="button">Gallery</button>
+                        <button id="cameraButton" class="secondary-button" type="button">Camera</button>
+                    </div>
+                </div>
+
+                <div id="previewBox" class="preview-box is-empty">
+                    <img id="previewImage" alt="Selected fruit preview">
+                    <div class="preview-meta">
+                        <strong id="fileName">No image selected</strong>
+                        <span id="fileSize">Waiting for a fruit photo</span>
+                    </div>
+                </div>
+
+                <button id="predictButton" class="predict-button" type="button" disabled>
+                    Predict Fruit
+                </button>
+            </section>
+
+            <section id="resultPanel" class="panel result-panel">
+                <div class="panel-heading">
+                    <span class="panel-kicker">AI result</span>
+                    <span id="deviceBadge" class="device-badge">{{ device }}</span>
+                </div>
+
+                <div id="emptyState" class="empty-state">
+                    <span>&#10022;</span>
+                    <h2>Ready for a fresh read</h2>
+                    <p>The prediction glow, confidence meter, and top-3 ranking will appear here.</p>
+                </div>
+
+                <div id="predictionState" class="prediction-state" hidden>
+                    <div class="winner-row">
+                        <span id="winnerIcon" class="winner-icon">&#127822;</span>
+                        <div>
+                            <p class="result-label">Predicted fruit</p>
+                            <h2 id="predictionName">Apple</h2>
+                        </div>
+                    </div>
+
+                    <div class="confidence-wrap">
+                        <div class="confidence-topline">
+                            <span>Confidence</span>
+                            <strong id="confidenceText">0%</strong>
+                        </div>
+                        <div class="confidence-track" aria-label="Prediction confidence">
+                            <div id="confidenceBar" class="confidence-bar"></div>
+                        </div>
+                    </div>
+
+                    <div class="top3-block">
+                        <h3>Top 3 probabilities</h3>
+                        <div id="top3List" class="top3-list"></div>
+                    </div>
+                </div>
+            </section>
+
+            <aside class="panel insight-panel">
+                <div class="panel-heading">
+                    <span class="panel-kicker">Fruit profile</span>
+                    <span id="moodChip" class="mood-chip">Blend</span>
+                </div>
+                <div class="fruit-profile">
+                    <span id="profileIcon" class="profile-icon">&#127815;</span>
+                    <h2 id="profileTitle">Theme awakens after prediction</h2>
+                    <p id="profileFact">The app will shift color, motion, glow, and accents to match the predicted fruit.</p>
+                </div>
+                <div class="quality-meter">
+                    <span>Image quality pulse</span>
+                    <div class="pulse-line"><i></i></div>
+                </div>
+            </aside>
+
+            <aside class="panel history-panel">
+                <div class="panel-heading">
+                    <span class="panel-kicker">Prediction history</span>
+                    <button id="clearHistoryButton" class="ghost-button" type="button">Clear</button>
+                </div>
+                <div id="historyList" class="history-list">
+                    <p class="history-empty">No predictions yet.</p>
+                </div>
+            </aside>
+        </section>
+    </main>
+
+    <footer class="app-footer">
+        <span>Model: {{ model_file }} | Classes: {{ classes|join(', ') }}</span>
+        <strong id="footerSummary">No confidence summary yet.</strong>
+    </footer>
+
+    <script>
+        window.APP_CONFIG = {
+            modelReady: {{ 'true' if model_ready else 'false' }},
+            modelError: {{ model_error|tojson }},
+            classes: {{ classes|tojson }}
+        };
+    </script>
+    <script src="{{ url_for('static', filename='script.js') }}"></script>
+</body>
+</html>
