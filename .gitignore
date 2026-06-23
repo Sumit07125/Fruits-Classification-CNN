@@ -51,3 +51,7 @@ Strawberry/
 .vscode/
 .idea/
 *.swp
+
+# Local AI / Docs
+interview.md
+model.md
