@@ -9,8 +9,11 @@
 
 *An end-to-end Deep Learning web application that classifies fruit images with high accuracy.*
 
-![App UI](static/images/image.png)
-![Apple Prediction](static/images/image1.png)
+![UI img 1](static/images/image.png)
+*UI img 1*
+
+![UI img 2](static/images/image1.png)
+*UI img 2*
 
 </div>
 
