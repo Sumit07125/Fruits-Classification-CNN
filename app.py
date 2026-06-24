@@ -1,21 +1,21 @@
-from __future__ import annotations
 import io
+import json
 import logging
 import os
-from dotenv import load_dotenv
-
-load_dotenv()
 from pathlib import Path
-from typing import Any
-import torch
-import torch.nn as nn
+
+from dotenv import load_dotenv
+import numpy as np
+import onnxruntime as ort
 from flask import Flask, jsonify, render_template, request
 from PIL import Image, ImageOps, UnidentifiedImageError
-from torchvision import transforms
-from torchvision.models import resnet50
 from werkzeug.utils import secure_filename
+
+load_dotenv()
+
 BASE_DIR = Path(__file__).resolve().parent
-MODEL_PATH = BASE_DIR / 'models' / 'fruit_resnet50_best.pt'
+MODEL_PATH = BASE_DIR / 'models' / 'fruit_resnet50.onnx'
+CLASS_NAMES_PATH = BASE_DIR / 'models' / 'class_names.json'
 ALLOWED_EXTENSIONS = {'jpg', 'jpeg', 'png', 'webp', 'bmp'}
 FALLBACK_CLASSES = ['Apple', 'Banana', 'Grape', 'Mango', 'Strawberry']
 MAX_UPLOAD_BYTES = 10 * 1024 * 1024
@@ -25,61 +25,33 @@ def create_app() -> Flask:
     app = Flask(__name__)
     app.config['MAX_CONTENT_LENGTH'] = MAX_UPLOAD_BYTES
     return app
+
 app = create_app()
 logging.basicConfig(level=logging.INFO, format='%(levelname)s: %(message)s')
 
-def get_device() -> torch.device:
-    if hasattr(torch, 'xpu') and torch.xpu.is_available():
-        return torch.device('xpu')
-    if torch.cuda.is_available():
-        return torch.device('cuda')
-    return torch.device('cpu')
-DEVICE = get_device()
-inference_transform = transforms.Compose([transforms.Resize(256), transforms.CenterCrop(224), transforms.ToTensor(), transforms.Normalize([0.485, 0.456, 0.406], [0.229, 0.224, 0.225])])
-
-def torch_load(path: Path, device: torch.device) -> Any:
-    try:
-        return torch.load(path, map_location=device, weights_only=False)
-    except TypeError:
-        return torch.load(path, map_location=device)
-
-def clean_class_names(raw_names: Any) -> list[str]:
-    if not raw_names:
-        return FALLBACK_CLASSES
-    names = [str(name).replace('_', ' ').strip().title() for name in raw_names]
-    return names or FALLBACK_CLASSES
-
-def strip_module_prefix(state_dict: dict[str, torch.Tensor]) -> dict[str, torch.Tensor]:
-    if not any((key.startswith('module.') for key in state_dict)):
-        return state_dict
-    return {key.replace('module.', '', 1): value for key, value in state_dict.items()}
-
-def load_fruit_model() -> tuple[torch.nn.Module, list[str]]:
+def load_fruit_model():
     if not MODEL_PATH.exists():
         raise FileNotFoundError(f'Model file not found: {MODEL_PATH.name}')
-    checkpoint = torch_load(MODEL_PATH, DEVICE)
-    if isinstance(checkpoint, dict) and 'model_state_dict' in checkpoint:
-        state_dict = checkpoint['model_state_dict']
-        class_names = clean_class_names(checkpoint.get('class_names'))
-    else:
-        state_dict = checkpoint
-        class_names = FALLBACK_CLASSES
-    state_dict = strip_module_prefix(state_dict)
-    model = resnet50(weights=None)
-    model.fc = nn.Linear(model.fc.in_features, len(class_names))
-    model.load_state_dict(state_dict)
-    model.to(DEVICE)
-    model.eval()
-    return (model, class_names)
+    
+    # Load class names
+    class_names = FALLBACK_CLASSES
+    if CLASS_NAMES_PATH.exists():
+        with open(CLASS_NAMES_PATH, 'r') as f:
+            class_names = json.load(f)
+            
+    # Initialize ONNX Runtime session
+    session = ort.InferenceSession(str(MODEL_PATH), providers=['CPUExecutionProvider'])
+    return session, class_names
+
 try:
-    MODEL, CLASS_NAMES = load_fruit_model()
+    SESSION, CLASS_NAMES = load_fruit_model()
     MODEL_ERROR = None
-    app.logger.info('Loaded %s on %s with classes: %s', MODEL_PATH.name, DEVICE, CLASS_NAMES)
+    app.logger.info('Loaded %s with classes: %s', MODEL_PATH.name, CLASS_NAMES)
 except Exception as exc:
-    MODEL = None
+    SESSION = None
     CLASS_NAMES = FALLBACK_CLASSES
     MODEL_ERROR = str(exc)
-    app.logger.exception('Could not load the fruit model')
+    app.logger.exception('Could not load the ONNX model')
 
 def allowed_file(filename: str) -> bool:
     return '.' in filename and filename.rsplit('.', 1)[1].lower() in ALLOWED_EXTENSIONS
@@ -95,48 +67,112 @@ def read_uploaded_image(file_storage) -> Image.Image:
     except (UnidentifiedImageError, OSError, ValueError) as exc:
         raise ValueError('Please upload a valid image file.') from exc
 
-def predict_image(image: Image.Image) -> dict[str, Any]:
-    if MODEL is None:
+def preprocess_image(image: Image.Image) -> np.ndarray:
+    # Resize shortest edge to 256
+    w, h = image.size
+    if w < h:
+        new_w = 256
+        new_h = int(256 * h / w)
+    else:
+        new_h = 256
+        new_w = int(256 * w / h)
+    image = image.resize((new_w, new_h), Image.Resampling.BILINEAR)
+    
+    # CenterCrop 224
+    left = (image.width - 224) / 2
+    top = (image.height - 224) / 2
+    right = (image.width + 224) / 2
+    bottom = (image.height + 224) / 2
+    image = image.crop((left, top, right, bottom))
+    
+    # ToTensor (0.0 to 1.0) and Normalize
+    img_array = np.array(image, dtype=np.float32) / 255.0
+    
+    mean = np.array([0.485, 0.456, 0.406], dtype=np.float32)
+    std = np.array([0.229, 0.224, 0.225], dtype=np.float32)
+    img_array = (img_array - mean) / std
+    
+    # HWC to CHW format (PyTorch expects channels first)
+    img_array = np.transpose(img_array, (2, 0, 1))
+    
+    # Add batch dimension: (1, 3, 224, 224)
+    img_array = np.expand_dims(img_array, axis=0)
+    return img_array
+
+def softmax(x):
+    e_x = np.exp(x - np.max(x))
+    return e_x / e_x.sum(axis=-1, keepdims=True)
+
+def predict_image(image: Image.Image) -> dict:
+    if SESSION is None:
         raise RuntimeError(MODEL_ERROR or 'Model is not available.')
-    tensor = inference_transform(image).unsqueeze(0).to(DEVICE)
-    with torch.inference_mode():
-        logits = MODEL(tensor)
-        probabilities = torch.softmax(logits, dim=1).squeeze(0)
+        
+    input_array = preprocess_image(image)
+    
+    input_name = SESSION.get_inputs()[0].name
+    logits = SESSION.run(None, {input_name: input_array})[0]
+    
+    probabilities = softmax(logits)[0]
+    
     top_count = min(3, len(CLASS_NAMES))
-    top_probs, top_indices = torch.topk(probabilities, k=top_count)
-    top3 = [{'label': CLASS_NAMES[index.item()], 'confidence': round(float(prob.item()) * 100, 2)} for prob, index in zip(top_probs.cpu(), top_indices.cpu())]
+    top_indices = probabilities.argsort()[-top_count:][::-1]
+    
+    top3 = []
+    for idx in top_indices:
+        top3.append({
+            'label': CLASS_NAMES[idx],
+            'confidence': round(float(probabilities[idx]) * 100, 2)
+        })
+        
     winner = top3[0]
-    return {'prediction': winner['label'], 'confidence': winner['confidence'], 'top3': top3, 'device': str(DEVICE), 'classes': CLASS_NAMES}
+    return {
+        'prediction': winner['label'], 
+        'confidence': winner['confidence'], 
+        'top3': top3, 
+        'device': "ONNX Runtime (CPU)", 
+        'classes': CLASS_NAMES
+    }
 
 @app.get('/')
 def index():
-    return render_template('index.html', classes=CLASS_NAMES, model_file=MODEL_PATH.name, model_ready=MODEL is not None, device=str(DEVICE), model_error=MODEL_ERROR)
+    return render_template(
+        'index.html', 
+        classes=CLASS_NAMES, 
+        model_file=MODEL_PATH.name, 
+        model_ready=SESSION is not None, 
+        device="ONNX Runtime (CPU)", 
+        model_error=MODEL_ERROR
+    )
 
 @app.post('/predict')
 def predict():
-    if MODEL is None:
-        return (jsonify({'error': MODEL_ERROR or 'Model is not available.'}), 503)
+    if SESSION is None:
+        return jsonify({'error': MODEL_ERROR or 'Model is not available.'}), 503
     if 'image' not in request.files:
-        return (jsonify({'error': 'Please choose a fruit image first.'}), 400)
+        return jsonify({'error': 'Please choose a fruit image first.'}), 400
+        
     file = request.files['image']
     filename = secure_filename(file.filename or '')
     if not filename:
-        return (jsonify({'error': 'Please choose a fruit image first.'}), 400)
+        return jsonify({'error': 'Please choose a fruit image first.'}), 400
     if not allowed_file(filename):
-        return (jsonify({'error': 'Supported formats: JPG, PNG, WEBP, or BMP.'}), 400)
+        return jsonify({'error': 'Supported formats: JPG, PNG, WEBP, or BMP.'}), 400
+        
     try:
         image = read_uploaded_image(file)
         result = predict_image(image)
     except ValueError as exc:
-        return (jsonify({'error': str(exc)}), 400)
+        return jsonify({'error': str(exc)}), 400
     except Exception:
         app.logger.exception('Prediction failed')
-        return (jsonify({'error': 'Prediction failed. Please try another clear fruit photo.'}), 500)
+        return jsonify({'error': 'Prediction failed. Please try another clear fruit photo.'}), 500
+        
     return jsonify(result)
 
 @app.errorhandler(413)
 def file_too_large(_error):
-    return (jsonify({'error': 'Image is too large. Please upload an image under 10 MB.'}), 413)
+    return jsonify({'error': 'Image is too large. Please upload an image under 10 MB.'}), 413
+
 if __name__ == '__main__':
     debug_mode = os.environ.get('FLASK_DEBUG', '0') == '1'
     port = int(os.environ.get('PORT', '5000'))
